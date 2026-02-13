@@ -1,0 +1,92 @@
+#cloud-config
+runcmd:
+  # ----------------------------------------------------------------------------
+  # [1] OS 기본 설정 및 리포지토리 최적화
+  # ----------------------------------------------------------------------------
+  - sudo setenforce 0
+  - sudo grubby --update-kernel ALL --args selinux=0
+
+  - sed -i 's|^mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/rocky*.repo
+  - sed -i 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=${repo_url}|g' /etc/yum.repos.d/rocky*.repo
+
+  # ----------------------------------------------------------------------------
+  # [2] 아웃바운드 연결 검증 (Firewall Health Check)
+  # ----------------------------------------------------------------------------
+  - |
+    RETRIES=30
+    TARGET="https://dl.rockylinux.org"
+    echo "Checking firewall connectivity to $TARGET..."
+    
+    while [ $RETRIES -gt 0 ]; do
+      curl -I $TARGET --connect-timeout 5
+      if [ $? -eq 0 ]; then
+        echo "Firewall open! Proceeding..."
+        break
+      fi
+      sleep 60
+      let RETRIES=RETRIES-1
+    done
+
+  # ----------------------------------------------------------------------------
+  # [3] 패키지 설치 (LAMP Stack + PHP Extensions)
+  # ----------------------------------------------------------------------------
+  - sudo dnf clean all
+  - sudo dnf makecache
+  - sudo dnf install -y epel-release
+  - sudo sed -i 's|^metalink=|#metalink=|g' /etc/yum.repos.d/epel*.repo
+  - sudo sed -i 's|^#baseurl=https://download.example/pub|baseurl=https://dl.fedoraproject.org/pub|g' /etc/yum.repos.d/epel*.repo
+  - sudo dnf install -y httpd wget tar php php-cli php-common php-pdo php-fpm php-mysqlnd php-gd php-mbstring
+  - sudo dnf install -y php-pecl-redis
+
+  # ----------------------------------------------------------------------------
+  # [4] WordPress 다운로드 및 배치
+  # ----------------------------------------------------------------------------
+  - sudo wget https://ko.wordpress.org/wordpress-latest-ko_KR.tar.gz -O /tmp/wordpress.tar.gz
+  - sudo tar xvfz /tmp/wordpress.tar.gz -C /tmp
+  - sudo rm -rf /var/www/html/*
+  - sudo cp -ar /tmp/wordpress/* /var/www/html/
+  - sudo cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+  
+  # ----------------------------------------------------------------------------
+  # [5] WordPress 설정 파일 구성 (DB 연결 정보 주입)
+  # ----------------------------------------------------------------------------
+  - sudo sed -i "s/database_name_here/wordpress/g" /var/www/html/wp-config.php
+  - sudo sed -i "s/username_here/${db_username}/g" /var/www/html/wp-config.php
+  - sudo sed -i "s/password_here/${db_password}/g" /var/www/html/wp-config.php
+  - sudo sed -i "s/localhost/${db_host}/g" /var/www/html/wp-config.php
+
+  # [SSL Offloading 처리] Load Balancer 뒤에서 HTTPS 인식 설정 추가
+  - |
+    cat <<EOF > /tmp/wp_dynamic_fix.php
+    \$_SERVER['HTTPS'] = 'on';
+    define('WP_HOME', 'https://www.${domain_name}');
+    define('WP_SITEURL', 'https://www.${domain_name}');
+    EOF
+  
+  - sudo sed -i "/<?php/r /tmp/wp_dynamic_fix.php" /var/www/html/wp-config.php
+  - sudo sed -i 's/\r//g' /var/www/html/wp-config.php
+
+  # ----------------------------------------------------------------------------
+  # [6] PHP 세션 클러스터링 구성 (Redis 연동)
+  # ----------------------------------------------------------------------------
+  - sudo cp /etc/php.ini /etc/php.ini.bak
+
+  # 세션 핸들러를 files에서 redis로 변경
+  - sudo sed -i 's/session.save_handler = files/session.save_handler = redis/g' /etc/php.ini
+
+  # 기존 파일 기반 세션 경로 주석 처리
+  - sudo sed -i 's/^session.save_path/;session.save_path/g' /etc/php.ini
+
+  # Redis 연결 문자열 주입 (TLS 적용)
+  - |
+    sudo sh -c 'echo "" >> /etc/php.ini'
+    sudo sh -c 'echo "session.save_path = \"tls://${redis_host}:6380?auth=${redis_key}\"" >> /etc/php.ini'
+
+  # ----------------------------------------------------------------------------
+  # [7] 서비스 시작 및 상태 페이지 생성
+  # ----------------------------------------------------------------------------
+  - sudo chown -R apache:apache /var/www/html
+  - sudo chmod -R 755 /var/www/html
+  - sudo echo "Team02-Webserver-($(hostname))" > /var/www/html/health.html
+  - sudo systemctl enable --now httpd
+  - sudo systemctl enable --now php-fpm

@@ -1,0 +1,27 @@
+#cloud-config
+write_files:
+  # Terraform에서 주입된 Private Key를 임시 경로에 Base64로 저장 (권한 문제 방지)
+  - path: /tmp/id_rsa.temp
+    permissions: '0600'
+    encoding: b64
+    content: ${private_key}
+
+runcmd:
+  # [1] 시스템 기본 설정: SELinux 비활성화
+  - setenforce 0
+  - sudo grubby --update-kernel ALL --args selinux=0
+
+  # [2] 패키지 리포지토리 설정: 미러 사이트 변경 (속도 최적화)
+  - sed -i 's|^mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/rocky*.repo
+  - sed -i 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=${repo_url}|g' /etc/yum.repos.d/rocky*.repo
+
+  # [3] SSH 키 구성: 관리자 계정 홈 디렉토리로 키 이동 및 권한 설정
+  - mkdir -p /home/${username}/.ssh
+  - mv /tmp/id_rsa.temp /home/${username}/.ssh/id_rsa
+  - chown -R ${username}:${username} /home/${username}/.ssh
+  - chmod 700 /home/${username}/.ssh
+  - chmod 600 /home/${username}/.ssh/id_rsa
+  
+  # [4] 초기화 완료 로그 기록
+  - echo "SSH Key setup completed for ${username}" >> /var/log/cloud-init-custom.log
+  - ls -la /home/${username}/.ssh >> /var/log/cloud-init-custom.log
