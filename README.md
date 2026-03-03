@@ -16,54 +16,7 @@ Azure Front Door를 통해 주 리전(Primary)과 재해 복구 리전(Secondary
 ## 2. 아키텍처 구성도
 Azure Front Door가 글로벌 진입점 역할을 하며, 양쪽 리전으로 트래픽을 분산함. 리전 내부로 들어온 트래픽은 웹 방화벽(WAF)과 중앙 방화벽(Azure Firewall)을 모두 거쳐야만 애플리케이션에 도달함.
 
-```mermaid
-graph LR
-    User((User)) -->|HTTPS/Anycast| FD[Azure Front Door <br/> Global WAF]
-    
-    subgraph "Primary Region (Seoul)"
-        direction TB
-        AGW1[App Gateway <br/> Regional WAF]
-        FW1[Azure Firewall <br/> Traffic Inspector]
-        ILB1[Internal LB]
-        VMSS1[Web Server VMSS <br/> Auto Scaling]
-        DB_M[(MySQL Master)]
-        Redis[(Redis Cache)]
-        
-        %% Traffic Flow defined by UDR
-        AGW1 -->|UDR: NextHop Firewall| FW1
-        FW1 -->|Allow Policy| ILB1
-        ILB1 --> VMSS1
-        
-        %% Backend Flow
-        VMSS1 -->|Read/Write| DB_M
-        VMSS1 -->|Session Store| Redis
-    end
-    
-    subgraph "Secondary Region (Canada Central)"
-        direction TB
-        AGW2[App Gateway <br/> Regional WAF]
-        FW2[Azure Firewall]
-        ILB2[Internal LB]
-        VMSS2[Web Server VMSS]
-        DB_S[(MySQL Replica)]
-        
-        AGW2 -->|UDR: NextHop Firewall| FW2
-        FW2 --> ILB2
-        ILB2 --> VMSS2
-        
-        %% Cross-Region Flow
-        VMSS2 -.->|Cross-Region Read| DB_M
-        VMSS2 -.->|Cross-Region Session| Redis
-    end
-
-    %% Global Active-Active Traffic Flow
-    FD ===>|Priority 1 / Weight 1000| AGW1
-    FD ===>|Priority 1 / Weight 1000| AGW2
-
-    %% Data Replication (Active-Passive)
-    DB_M -.->|Geo-Replication Async| DB_S
-```
-
+<img width="1871" height="927" alt="image" src="https://github.com/user-attachments/assets/b5725f24-5565-41c7-89d9-009dc5fe2a60" />
 ---
 
 ## 3. 핵심 기술 및 구현 논리
